@@ -7,7 +7,6 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
 import os
 import time
 import traceback
@@ -33,8 +32,9 @@ def web_driver():
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
     
-    # Utiliser ChromeDriver directement sans webdriver-manager
-    return webdriver.Chrome(options=options)
+    # Utiliser le ChromeDriver installé dans le container
+    service = Service('/usr/local/bin/chromedriver')
+    return webdriver.Chrome(service=service, options=options)
 
 def take_fullpage_screenshot(driver, path):
     original_size = driver.get_window_size()
@@ -112,7 +112,7 @@ def calculate_iol(data, screenshot_path="result_screenshot.png"):
         driver = web_driver()
         wait = WebDriverWait(driver, 60)
         
-        print("📍 Navigating to site...")
+        print("🔍 Navigating to site...")
         driver.get("https://iolcalculator.escrs.org/")
         
         # Accept conditions
@@ -267,7 +267,7 @@ def calculate_iol(data, screenshot_path="result_screenshot.png"):
         result['message'] = str(e)
     finally:
         if driver:
-            print("\n🔚 Closing browser...")
+            print("\n📚 Closing browser...")
             driver.quit()
     
     return result
