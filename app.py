@@ -31,7 +31,7 @@ def web_driver():
     options.add_argument('--disable-blink-features=AutomationControlled')
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
-    
+
     # Utiliser le ChromeDriver installé dans le container
     service = Service('/usr/local/bin/chromedriver')
     return webdriver.Chrome(service=service, options=options)
@@ -57,12 +57,12 @@ def select_gender(driver, wait, gender_value="Female"):
             By.XPATH, "//div[contains(@class, 'mud-select')]"
         )))
         ActionChains(driver).move_to_element(dropdown_container).click().perform()
-        
+
         dropdown_popup = wait.until(EC.presence_of_element_located((
             By.XPATH, "//div[contains(@class, 'mud-popover-open')]"
         )))
         time.sleep(0.5)
-        
+
         gender_option = dropdown_popup.find_element(
             By.XPATH, f".//div[contains(@class,'mud-list-item')][.//p[normalize-space(text())='{gender_value}']]"
         )
@@ -78,12 +78,12 @@ def select_dropdown_value(section, driver, wait, dropdown_label, value):
             By.XPATH, f".//div[contains(@class, 'mud-select') and .//label[normalize-space(text())='{dropdown_label}']]"
         )
         ActionChains(driver).move_to_element(dropdown).click().perform()
-        
+
         popup = wait.until(EC.presence_of_element_located((
             By.XPATH, "//div[contains(@class, 'mud-popover-open')]"
         )))
         time.sleep(0.5)
-        
+
         option = popup.find_element(
             By.XPATH, f".//div[contains(@class,'mud-list-item')][.//p[normalize-space(text())='{value}']]"
         )
@@ -94,6 +94,52 @@ def select_dropdown_value(section, driver, wait, dropdown_label, value):
         print(f"❌ Error selecting {dropdown_label} = {value}: {e}")
         raise
 
+def set_switch(section, driver, switch_label, desired_state):
+    """
+    Active ou désactive un switch dans une section donnée (OD ou OS)
+    Les switches disponibles: Toric, Keratoconus, Argos (SoS) AL, Post LASIK/PRK
+    """
+    try:
+        # Trouver l'input switch par son label
+        switch_input = section.find_element(
+            By.XPATH, f".//label[.//p[contains(@class, 'mud-switch') and normalize-space(text())='{switch_label}']]//input[@type='checkbox' and contains(@class, 'mud-switch-input')]"
+        )
+
+        # Vérifier l'état actuel du switch
+        is_checked = switch_input.is_selected()
+
+        # Si l'état actuel est différent de l'état désiré, cliquer
+        if is_checked != desired_state:
+            driver.execute_script("arguments[0].scrollIntoView(true);", switch_input)
+            time.sleep(0.3)
+            driver.execute_script("arguments[0].click();", switch_input)
+            time.sleep(0.5)
+            print(f"✅ Switch '{switch_label}' set to: {desired_state}")
+        else:
+            print(f"ℹ️  Switch '{switch_label}' already at: {desired_state}")
+
+    except Exception as e:
+        print(f"⚠️ Warning: Could not set switch '{switch_label}' to {desired_state}: {e}")
+        # Ne pas raise l'erreur, continuer
+
+def configure_switches(section, driver, switches_config, eye_name):
+    """Configure tous les switches d'une section (OD ou OS)"""
+    if not switches_config:
+        return
+
+    print(f"\n🔘 Configuring switches for {eye_name}...")
+
+    # Les 4 switches disponibles
+    available_switches = ["Toric", "Keratoconus", "Argos (SoS) AL", "Post LASIK/PRK"]
+
+    for switch_name in available_switches:
+        if switch_name in switches_config:
+            desired_state = switches_config[switch_name]
+            set_switch(section, driver, switch_name, desired_state)
+
+    # Attendre que la page se stabilise après les switches
+    time.sleep(1)
+
 def calculate_iol(data, screenshot_path="result_screenshot.png"):
     driver = None
     result = {
@@ -101,25 +147,25 @@ def calculate_iol(data, screenshot_path="result_screenshot.png"):
         'message': '',
         'screenshot_saved': False
     }
-    
+
     try:
         top_fields = data.get("top_fields", {})
         right_eye = data.get("right_eye", {})
         left_eye = data.get("left_eye", {})
         gender = data.get("gender", "Female")
-        
+
         print("🚀 Starting browser...")
         driver = web_driver()
         wait = WebDriverWait(driver, 60)
-        
+
         print("🔍 Navigating to site...")
         driver.get("https://iolcalculator.escrs.org/")
-        
+
         # Accept conditions
         print("✅ Accepting conditions...")
         wait.until(EC.element_to_be_clickable((By.XPATH, "//button[.//span[text()='I Agree']]"))).click()
         time.sleep(1)
-        
+
         # Uncheck 4th checkbox if checked
         try:
             fourth_checkbox = wait.until(EC.presence_of_element_located((
@@ -131,19 +177,19 @@ def calculate_iol(data, screenshot_path="result_screenshot.png"):
                 print("✅ 4th checkbox unchecked")
         except Exception as e:
             print(f"⚠️ Checkbox handling: {e}")
-        
+
         # Select gender
         select_gender(driver, wait, gender_value=gender)
-        
+
         # Fill top fields
         print("\n📝 Filling patient information...")
         field_mapping = {
             "surgeon": "Surgeon",
-            "patient_initials": "Patient Initials", 
+            "patient_initials": "Patient Initials",
             "id": "Id",
             "age": "Age"
         }
-        
+
         for key, label in field_mapping.items():
             if key in top_fields:
                 try:
@@ -157,24 +203,40 @@ def calculate_iol(data, screenshot_path="result_screenshot.png"):
                     print(f"✅ {label}: {top_fields[key]}")
                 except Exception as e:
                     print(f"❌ Failed to fill {label}: {e}")
-        
+
         # Process RIGHT EYE
         if right_eye:
             print("\n👁️ Configuring OD (Right Eye)...")
             od_section = driver.find_element(By.XPATH, "//h5[contains(text(),'OD Right')]/ancestor::div[contains(@class,'mud-paper')]")
-            
+
             manufacturer = right_eye.get("Manufacturer", None)
             select_iol = right_eye.get("Select IOL", None)
-            
+            switches = right_eye.get("switches", None)
+
             input_fields = right_eye.copy()
             if "Manufacturer" in input_fields:
                 del input_fields["Manufacturer"]
             if "Select IOL" in input_fields:
                 del input_fields["Select IOL"]
-            
+            if "switches" in input_fields:
+                del input_fields["switches"]
+
+            # Configure switches FIRST (before filling fields)
+            if switches:
+                configure_switches(od_section, driver, switches, "OD")
+
+            # Fill input fields
+            print(f"📝 Filling {len(input_fields)} fields for OD...")
+            filled_count = 0
             for el in od_section.find_elements(By.XPATH, ".//input"):
                 try:
                     input_id = el.get_attribute("id")
+                    input_type = el.get_attribute("type")
+
+                    # Skip checkboxes/radios
+                    if input_type in ["checkbox", "radio"]:
+                        continue
+
                     label_el = od_section.find_elements(By.XPATH, f".//label[@for='{input_id}']")
                     if label_el:
                         label = label_el[0].text.strip()
@@ -188,32 +250,52 @@ def calculate_iol(data, screenshot_path="result_screenshot.png"):
                                 el.send_keys(value[1:])
                             else:
                                 el.send_keys(value)
+                            filled_count += 1
                             print(f"✅ {label}: {value}")
-                except:
+                except Exception as e:
+                    print(f"⚠️ Error filling field: {e}")
                     continue
-            
+
+            print(f"📊 Filled {filled_count}/{len(input_fields)} fields for OD")
+
             if manufacturer:
                 select_dropdown_value(od_section, driver, wait, "Manufacturer", manufacturer)
             if select_iol:
                 select_dropdown_value(od_section, driver, wait, "Select IOL", select_iol)
-        
+
         # Process LEFT EYE
         if left_eye:
             print("\n👁️ Configuring OS (Left Eye)...")
             os_section = driver.find_element(By.XPATH, "//h5[contains(text(),'OS Left')]/ancestor::div[contains(@class,'mud-paper')]")
-            
+
             manufacturer = left_eye.get("Manufacturer", None)
             select_iol = left_eye.get("Select IOL", None)
-            
+            switches = left_eye.get("switches", None)
+
             input_fields = left_eye.copy()
             if "Manufacturer" in input_fields:
                 del input_fields["Manufacturer"]
             if "Select IOL" in input_fields:
                 del input_fields["Select IOL"]
-            
+            if "switches" in input_fields:
+                del input_fields["switches"]
+
+            # Configure switches FIRST (before filling fields)
+            if switches:
+                configure_switches(os_section, driver, switches, "OS")
+
+            # Fill input fields
+            print(f"📝 Filling {len(input_fields)} fields for OS...")
+            filled_count = 0
             for el in os_section.find_elements(By.XPATH, ".//input"):
                 try:
                     input_id = el.get_attribute("id")
+                    input_type = el.get_attribute("type")
+
+                    # Skip checkboxes/radios
+                    if input_type in ["checkbox", "radio"]:
+                        continue
+
                     label_el = os_section.find_elements(By.XPATH, f".//label[@for='{input_id}']")
                     if label_el:
                         label = label_el[0].text.strip()
@@ -227,40 +309,44 @@ def calculate_iol(data, screenshot_path="result_screenshot.png"):
                                 el.send_keys(value[1:])
                             else:
                                 el.send_keys(value)
+                            filled_count += 1
                             print(f"✅ {label}: {value}")
-                except:
+                except Exception as e:
+                    print(f"⚠️ Error filling field: {e}")
                     continue
-            
+
+            print(f"📊 Filled {filled_count}/{len(input_fields)} fields for OS")
+
             if manufacturer:
                 select_dropdown_value(os_section, driver, wait, "Manufacturer", manufacturer)
             if select_iol:
                 select_dropdown_value(os_section, driver, wait, "Select IOL", select_iol)
-        
+
         # CALCULATE
         print("\n🔄 Calculating...")
         calc_button = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[.//span[contains(text(),'Calculate')]]")))
         driver.execute_script("arguments[0].click();", calc_button)
         print("✅ Calculate button clicked")
-        
+
         # Wait for results
         try:
             wait.until(EC.element_to_be_clickable((By.XPATH, "//button[.//span[normalize-space(text())='Print']]")))
             print("✅ Results loaded")
         except:
             print("⚠️ Print button not found, but continuing...")
-        
+
         time.sleep(2)
-        
+
         # Take final screenshot
         print("\n📸 Capturing result...")
         screenshot_saved = take_fullpage_screenshot(driver, screenshot_path)
-        
+
         result['success'] = True
         result['message'] = 'Calculation completed successfully'
         result['screenshot_saved'] = screenshot_saved
-        
+
         print("\n✅ Process completed successfully!")
-        
+
     except Exception as e:
         print(f"\n❌ Error: {e}")
         result['success'] = False
@@ -269,7 +355,7 @@ def calculate_iol(data, screenshot_path="result_screenshot.png"):
         if driver:
             print("\n📚 Closing browser...")
             driver.quit()
-    
+
     return result
 
 # API ENDPOINTS
@@ -289,20 +375,20 @@ def calculate():
         data = request.json
         if not data:
             return jsonify({'error': 'No data provided'}), 400
-        
+
         # Générer un nom unique pour le screenshot
         calc_id = str(uuid.uuid4())
         screenshot_filename = f"{calc_id}.png"
         screenshot_path = os.path.join(SCREENSHOTS_DIR, screenshot_filename)
-        
+
         print(f"\n{'='*60}")
         print(f"📋 New calculation request: {calc_id}")
         print(f"📊 Data: {data}")
         print(f"{'='*60}\n")
-        
+
         # Exécuter le calcul
         result = calculate_iol(data, screenshot_path)
-        
+
         if result['success'] and os.path.exists(screenshot_path):
             # Retourner directement le screenshot
             return send_file(
@@ -317,7 +403,7 @@ def calculate():
                 'message': result.get('message', 'Unknown error'),
                 'calculation_id': calc_id
             }), 500
-            
+
     except Exception as e:
         return jsonify({
             'error': str(e),
@@ -331,20 +417,20 @@ def calculate_json():
         data = request.json
         if not data:
             return jsonify({'error': 'No data provided'}), 400
-        
+
         # Générer un nom unique pour le screenshot
         calc_id = str(uuid.uuid4())
         screenshot_filename = f"{calc_id}.png"
         screenshot_path = os.path.join(SCREENSHOTS_DIR, screenshot_filename)
-        
+
         print(f"\n{'='*60}")
         print(f"📋 New calculation request: {calc_id}")
         print(f"📊 Data: {data}")
         print(f"{'='*60}\n")
-        
+
         # Exécuter le calcul
         result = calculate_iol(data, screenshot_path)
-        
+
         if result['success'] and os.path.exists(screenshot_path):
             return jsonify({
                 'success': True,
@@ -361,7 +447,7 @@ def calculate_json():
                 'calculation_id': calc_id,
                 'timestamp': datetime.now().isoformat()
             }), 500
-            
+
     except Exception as e:
         return jsonify({
             'success': False,
@@ -374,10 +460,10 @@ def calculate_json():
 def get_screenshot(calc_id):
     """Récupérer un screenshot par son ID"""
     screenshot_path = os.path.join(SCREENSHOTS_DIR, f"{calc_id}.png")
-    
+
     if not os.path.exists(screenshot_path):
         return jsonify({'error': 'Screenshot not found'}), 404
-    
+
     return send_file(
         screenshot_path,
         mimetype='image/png',
