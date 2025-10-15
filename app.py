@@ -36,20 +36,129 @@ def web_driver():
     service = Service('/usr/local/bin/chromedriver')
     return webdriver.Chrome(service=service, options=options)
 
+def click_share_and_get_link(driver, wait):
+    """Clique sur le bouton Share et récupère le lien copié"""
+    try:
+        print("\n🔗 Looking for Share button...")
+
+        # Essayer plusieurs variantes du bouton Share
+        share_button_xpaths = [
+            "//button[.//span[normalize-space(text())='Share']]",
+            "//button[contains(text(),'Share')]",
+            "//button[@title='Share']",
+            "//button[contains(@class,'share')]//span",
+            "//*[contains(text(),'Share')]"
+        ]
+
+        share_button = None
+        for xpath in share_button_xpaths:
+            try:
+                share_button = driver.find_element(By.XPATH, xpath)
+                if share_button:
+                    print(f"✅ Found Share button with xpath: {xpath}")
+                    break
+            except:
+                continue
+
+        if not share_button:
+            print("⚠️ Share button not found. Available buttons:")
+            try:
+                buttons = driver.find_elements(By.XPATH, "//button")
+                for i, btn in enumerate(buttons[:10]):  # Afficher les 10 premiers boutons
+                    try:
+                        btn_text = btn.text.strip()
+                        if btn_text:
+                            print(f"  Button {i+1}: '{btn_text}'")
+                    except:
+                        pass
+            except:
+                pass
+            return None
+
+        # Extraire le lien depuis l'attribut onclick du bouton Share
+        try:
+            onclick_attr = share_button.get_attribute("onclick")
+            print(f"📋 Share button onclick: {onclick_attr}")
+
+            if onclick_attr:
+                # Extraire l'URL entre les quotes dans copyToClipboard('URL')
+                import re
+                match = re.search(r"copyToClipboard\s*\(\s*['\"]([^'\"]+)['\"]", onclick_attr)
+                if match:
+                    share_link = match.group(1)
+                    print(f"🔗 Extracted share link from onclick: {share_link}")
+
+                    # Cliquer quand même sur le bouton pour copier dans le clipboard
+                    driver.execute_script("arguments[0].scrollIntoView(true);", share_button)
+                    time.sleep(0.3)
+                    driver.execute_script("arguments[0].click();", share_button)
+                    print("✅ Share button clicked (link copied to clipboard)")
+
+                    return share_link
+                else:
+                    print("⚠️ Could not extract URL from onclick attribute")
+            else:
+                print("⚠️ Share button has no onclick attribute")
+
+        except Exception as e:
+            print(f"⚠️ Error extracting link from onclick: {e}")
+
+        # Fallback: cliquer et essayer d'autres méthodes
+        try:
+            driver.execute_script("arguments[0].click();", share_button)
+            time.sleep(2)
+            print("✅ Share button clicked")
+
+            current_url = driver.current_url
+            print(f"📋 Current URL: {current_url}")
+            return current_url
+
+        except Exception as e:
+            print(f"⚠️ Could not click share button: {e}")
+            return None
+
+    except Exception as e:
+        print(f"❌ Error in Share functionality: {e}")
+        return None
+
 def take_fullpage_screenshot(driver, path):
+    """Capture un screenshot optimisé pour voir les résultats principaux sans scroll"""
     original_size = driver.get_window_size()
     try:
-        required_width = driver.execute_script('return document.body.parentNode.scrollWidth')
-        required_height = driver.execute_script('return document.body.parentNode.scrollHeight')
-        driver.set_window_size(required_width, required_height)
+        # Scroll tout en haut de la page
+        driver.execute_script("window.scrollTo(0, 0);")
+        time.sleep(0.5)
+
+        # Redimensionner pour une vue optimale des résultats (largeur maximale, hauteur généreuse)
+        # Hauteur de 2400px est suffisante pour voir tous les résultats IOL sans scroll
+        optimal_width = 1920
+        optimal_height = 2400
+
+        print(f"📏 Setting optimal viewport: {optimal_width}x{optimal_height}")
+
+        # Redimensionner la fenêtre
+        driver.set_window_size(optimal_width, optimal_height)
+        time.sleep(1)  # Attendre que la page se réajuste
+
+        # S'assurer qu'on est bien en haut
+        driver.execute_script("window.scrollTo(0, 0);")
+        time.sleep(0.3)
+
+        # Prendre le screenshot
         driver.save_screenshot(path)
-        print(f"✅ Screenshot saved: {path}")
+        print(f"✅ Screenshot saved: {path} ({optimal_width}x{optimal_height})")
         return True
     except Exception as e:
         print(f"❌ Screenshot error: {e}")
+        import traceback
+        traceback.print_exc()
         return False
     finally:
-        driver.set_window_size(original_size['width'], original_size['height'])
+        # Restaurer la taille originale
+        try:
+            driver.set_window_size(original_size['width'], original_size['height'])
+        except:
+            pass
 
 def select_gender(driver, wait, gender_value="Female"):
     try:
@@ -145,7 +254,8 @@ def calculate_iol(data, screenshot_path="result_screenshot.png"):
     result = {
         'success': False,
         'message': '',
-        'screenshot_saved': False
+        'screenshot_saved': False,
+        'share_link': None
     }
 
     try:
@@ -337,6 +447,11 @@ def calculate_iol(data, screenshot_path="result_screenshot.png"):
 
         time.sleep(2)
 
+        # Click Share and get the link
+        share_link = click_share_and_get_link(driver, wait)
+        if share_link:
+            result['share_link'] = share_link
+
         # Take final screenshot
         print("\n📸 Capturing result...")
         screenshot_saved = take_fullpage_screenshot(driver, screenshot_path)
@@ -370,7 +485,7 @@ def health_check():
 
 @app.route('/calculate', methods=['POST'])
 def calculate():
-    """Endpoint principal pour lancer un calcul IOL et récupérer le screenshot"""
+    """Endpoint principal pour lancer un calcul IOL et récupérer le screenshot avec le share_link dans les headers"""
     try:
         data = request.json
         if not data:
@@ -390,13 +505,20 @@ def calculate():
         result = calculate_iol(data, screenshot_path)
 
         if result['success'] and os.path.exists(screenshot_path):
-            # Retourner directement le screenshot
-            return send_file(
+            # Retourner le screenshot avec le share_link dans les headers HTTP
+            response = send_file(
                 screenshot_path,
                 mimetype='image/png',
                 as_attachment=True,
                 download_name=f'iol_calculation_{calc_id}.png'
             )
+
+            # Ajouter le share_link dans les headers de la réponse
+            if result.get('share_link'):
+                response.headers['X-Share-Link'] = result.get('share_link')
+            response.headers['X-Calculation-Id'] = calc_id
+
+            return response
         else:
             return jsonify({
                 'error': 'Calculation failed',
@@ -436,6 +558,7 @@ def calculate_json():
                 'success': True,
                 'calculation_id': calc_id,
                 'screenshot_url': f'/screenshot/{calc_id}',
+                'share_link': result.get('share_link', None),
                 'message': result.get('message', 'Calculation completed'),
                 'timestamp': datetime.now().isoformat()
             }), 200
