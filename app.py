@@ -209,9 +209,12 @@ def set_switch(section, driver, switch_label, desired_state):
     Les switches disponibles: Toric, Keratoconus, Argos (SoS) AL, Post LASIK/PRK
     """
     try:
-        # Trouver l'input switch par son label
+        # MudBlazor: le <label> du switch contient directement le texte.
+        # L'ancien markup avec <p class='mud-switch'>Label</p> imbriqué n'existe plus.
         switch_input = section.find_element(
-            By.XPATH, f".//label[.//p[contains(@class, 'mud-switch') and normalize-space(text())='{switch_label}']]//input[@type='checkbox' and contains(@class, 'mud-switch-input')]"
+            By.XPATH,
+            f".//label[normalize-space(.)='{switch_label}']"
+            f"//input[@type='checkbox' and contains(@class, 'mud-switch-input')]"
         )
 
         # Vérifier l'état actuel du switch
@@ -221,7 +224,9 @@ def set_switch(section, driver, switch_label, desired_state):
         if is_checked != desired_state:
             driver.execute_script("arguments[0].scrollIntoView(true);", switch_input)
             time.sleep(0.3)
-            driver.execute_script("arguments[0].click();", switch_input)
+            # Cliquer sur le <label> parent : MudBlazor attend l'event dessus
+            label_el = driver.execute_script("return arguments[0].closest('label');", switch_input)
+            driver.execute_script("arguments[0].click();", label_el or switch_input)
             time.sleep(0.5)
             print(f"✅ Switch '{switch_label}' set to: {desired_state}")
         else:
