@@ -173,7 +173,7 @@ GitHub Actions ([.github/workflows/tests.yml](.github/workflows/tests.yml)) exé
 
 ## Déploiement
 
-Un calcul dure entre 30 et 80 s. Le reverse proxy doit donc laisser au moins 180 s à l'upstream, sinon il renvoie un 504 alors que le calcul aboutit :
+Un calcul dure entre 30 et 80 s. Le reverse proxy doit donc laisser au moins 180 s à l'upstream, sinon il renvoie un 504 alors que le calcul aboutit. Avec **Traefik**, il n'y a pas de timeout backend par défaut : il suffit d'exposer le service sur le port 5000 via les labels habituels (`traefik.http.services.<nom>.loadbalancer.server.port=5000`). Avec **Nginx** :
 
 ```nginx
 location / {
@@ -191,6 +191,8 @@ git pull
 APP_VERSION=$(git rev-parse --short HEAD) docker compose up -d --build
 curl -s http://localhost:5000/health   # -> "version": "<sha>"
 ```
+
+Le script [deploy/install-vps.sh](deploy/install-vps.sh) automatise une installation complète sur un Ubuntu 24.04 vierge (Docker, Nginx, certbot). Il refuse de s'installer par-dessus un autre reverse proxy déjà présent sur les ports 80/443 : dans ce cas, intégrer le service `iol-api` de `docker-compose.yml` à la stack existante.
 
 ## Structure
 
