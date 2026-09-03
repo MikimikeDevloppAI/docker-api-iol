@@ -486,6 +486,55 @@ def configure_switches(section, driver, switches_config, eye_name, calc_id):
     time.sleep(0.5)
 
 
+def _values_match(actual, expected):
+    if actual is None:
+        return False
+    if actual == expected:
+        return True
+    try:  # le site peut reformater un nombre ("2.660" -> "2.66")
+        return float(actual) == float(expected)
+    except (TypeError, ValueError):
+        return False
+
+
+def fill_input_verified(driver, locate, value, field_name, calc_id, attempts=3):
+    """Saisit `value` dans l'input renvoyé par `locate()` et VÉRIFIE que la valeur est retenue.
+
+    Le formulaire est du Blazor Server : chaque événement fait un aller-retour serveur et peut
+    re-rendre l'input. Avec `clear()` (qui émet un `change`), le re-rendu pouvait arriver après
+    la frappe et effacer la valeur (cause des "Please specify the Surgeon's name" et des
+    RESULTS_TIMEOUT / 504 intermittents). On tape donc au clavier, on valide par TAB (un seul
+    `change`), puis on relit l'input (re-localisé) et on recommence si la valeur a été perdue.
+    La valeur n'est jamais loggée."""
+    value = str(value)
+    for attempt in range(1, attempts + 1):
+        el = locate()
+        el.click()
+        el.send_keys(Keys.CONTROL, "a")
+        el.send_keys(Keys.BACKSPACE)
+        if value.startswith("-"):
+            el.send_keys("-")
+            el.send_keys(value[1:])
+        else:
+            el.send_keys(value)
+        el.send_keys(Keys.TAB)
+        time.sleep(0.3 * attempt)
+        try:
+            actual = locate().get_attribute("value")
+        except StaleElementReferenceException:
+            time.sleep(0.3)
+            actual = locate().get_attribute("value")
+        if _values_match(actual, value):
+            if attempt > 1:
+                log(f"↩️ {field_name}: value retained after {attempt} attempts")
+            return
+        log(f"⚠️ {field_name}: value not retained (attempt {attempt}/{attempts}), retrying")
+        time.sleep(0.5)
+    save_debug_screenshot(driver, calc_id, f"{field_name}_value_not_retained")
+    raise IOLError("FIELD_VALUE_NOT_RETAINED",
+                   f"Field '{field_name}' did not keep its value after {attempts} attempts")
+
+
 def fill_top_field(driver, wait, key, label, value, calc_id):
     """Remplit un champ patient. La valeur n'est jamais loggée."""
     try:
@@ -493,9 +542,8 @@ def fill_top_field(driver, wait, key, label, value, calc_id):
         input_id = label_el.get_attribute("for")
         if not input_id:
             raise IOLError("TOP_FIELD_NO_INPUT_ID", f"Label '{label}' has no 'for' attribute")
-        input_el = wait.until(EC.element_to_be_clickable((By.ID, input_id)))
-        input_el.clear()
-        input_el.send_keys(str(value))
+        wait.until(EC.element_to_be_clickable((By.ID, input_id)))
+        fill_input_verified(driver, lambda: driver.find_element(By.ID, input_id), value, label, calc_id)
         log(f"✅ {label}: set")
     except TimeoutException:
         save_debug_screenshot(driver, calc_id, f"top_field_{key}_timeout")
@@ -507,6 +555,20 @@ def fill_top_field(driver, wait, key, label, value, calc_id):
         raise IOLError("TOP_FIELD_ERROR", f"Error filling top field '{label}': {type(e).__name__}")
 
 
+def map_eye_inputs(section):
+    """label -> id des inputs texte d'une section œil (les ids MudBlazor sont stables)."""
+    mapping = {}
+    for el in section.find_elements(By.XPATH, ".//input"):
+        input_id = el.get_attribute("id")
+        input_type = el.get_attribute("type")
+        if input_type in ("checkbox", "radio", "hidden") or not input_id:
+            continue
+        label_els = section.find_elements(By.XPATH, f".//label[@for='{input_id}']")
+        if label_els:
+            mapping[label_els[0].text.strip()] = input_id
+    return mapping
+
+
 def fill_eye_inputs(section, driver, input_fields, eye_name, calc_id):
     """Remplit les champs biométriques d'un œil. Retourne la liste des champs non trouvés.
     Les valeurs ne sont jamais loggées."""
@@ -514,41 +576,31 @@ def fill_eye_inputs(section, driver, input_fields, eye_name, calc_id):
         return []
 
     requested = set(input_fields.keys())
-    filled = set()
-
     log(f"📝 Filling {len(input_fields)} fields for {eye_name}: {sorted(requested)}")
-    for el in section.find_elements(By.XPATH, ".//input"):
+
+    mapping = None
+    for attempt in range(3):
         try:
-            input_id = el.get_attribute("id")
-            input_type = el.get_attribute("type")
-            if input_type in ("checkbox", "radio", "hidden") or not input_id:
-                continue
-            label_els = section.find_elements(By.XPATH, f".//label[@for='{input_id}']")
-            if not label_els:
-                continue
-            label = label_els[0].text.strip()
-            if label not in input_fields:
-                continue
-            value = str(input_fields[label])
-            try:
-                el.click()
-                el.send_keys(Keys.CONTROL, "a")
-                el.send_keys(Keys.BACKSPACE)
-                if label == "Target Refraction" and value.startswith("-"):
-                    el.send_keys("-")
-                    el.send_keys(value[1:])
-                else:
-                    el.send_keys(value)
-                filled.add(label)
-            except (ElementNotInteractableException, StaleElementReferenceException) as e:
-                save_debug_screenshot(driver, calc_id, f"{eye_name}_field_{label}_not_interactable")
-                raise IOLError("FIELD_NOT_INTERACTABLE",
-                               f"Field '{label}' in {eye_name} is not interactable: {type(e).__name__}")
+            mapping = map_eye_inputs(section)
+            break
+        except StaleElementReferenceException:
+            time.sleep(0.5)
+    if mapping is None:
+        raise IOLError("EYE_SECTION_UNSTABLE", f"Could not read inputs of {eye_name} (DOM kept changing)")
+
+    filled = set()
+    for label in [l for l in input_fields if l in mapping]:
+        input_id = mapping[label]
+        try:
+            fill_input_verified(driver, lambda: driver.find_element(By.ID, input_id),
+                                input_fields[label], f"{eye_name}/{label}", calc_id)
+            filled.add(label)
         except IOLError:
             raise
-        except Exception as e:
-            log(f"⚠️ Skipping a field in {eye_name} due to error: {type(e).__name__}")
-            continue
+        except (ElementNotInteractableException, StaleElementReferenceException) as e:
+            save_debug_screenshot(driver, calc_id, f"{eye_name}_field_{label}_not_interactable")
+            raise IOLError("FIELD_NOT_INTERACTABLE",
+                           f"Field '{label}' in {eye_name} is not interactable: {type(e).__name__}")
 
     log(f"📊 Filled {len(filled)}/{len(requested)} fields for {eye_name}")
     return sorted(requested - filled)

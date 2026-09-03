@@ -112,6 +112,21 @@ def test_switch_can_be_toggled_and_verified(calculator):
     iol_app.set_switch(section, driver, "Post LASIK/PRK", False, "OD", calc_id=None)
 
 
+def test_top_fields_retain_typed_values(calculator):
+    """Blazor Server peut re-rendre l'input après la frappe et effacer la valeur (cause des
+    "Please specify the Surgeon's name" -> RESULTS_TIMEOUT -> 504). La saisie doit être
+    vérifiée et retenue. Valeurs fictives, jamais loggées."""
+    driver, wait = calculator
+    typed = {"surgeon": "SURGEON_SECRET_XYZ", "patient_initials": "IS", "id": "PATIENTID_SECRET_1", "age": "84"}
+    for key, label in iol_app.TOP_FIELD_LABELS:
+        iol_app.fill_top_field(driver, wait, key, label, typed[key], calc_id=None)
+    time.sleep(1.0)  # laisser un éventuel re-rendu tardif arriver
+    for key, label in iol_app.TOP_FIELD_LABELS:
+        input_id = driver.find_element(By.XPATH, iol_app.xpath_top_label(label)).get_attribute("for")
+        actual = driver.find_element(By.ID, input_id).get_attribute("value")
+        assert actual == typed[key], f"champ {label} : valeur perdue après saisie"
+
+
 def test_manufacturer_dropdown_lists_known_brands(calculator):
     driver, wait = calculator
     section = driver.find_element(By.XPATH, iol_app.xpath_eye_section("OD Right"))

@@ -119,6 +119,7 @@ Le switch peut être nommé `Post LASIK/PRK` (historique) ou `Post LASIK/PRK/RK`
 | `DROPDOWN_VALUE_NOT_FOUND` | 500 | Fabricant ou modèle d'IOL absent de la liste ESCRS | Utiliser une valeur de `error.context.available` |
 | `SWITCH_NOT_FOUND`, `EYE_FIELDS_NOT_FOUND`, `TOP_FIELD_NOT_FOUND`, `EYE_SECTION_NOT_FOUND`, `DROPDOWN_NOT_FOUND` | 500 | Le site ESCRS a changé son markup | Lancer les tests live, adapter les sélecteurs dans `app.py` |
 | `CALCULATE_BUTTON_NOT_CLICKABLE`, `RESULTS_TIMEOUT` | 500 | Champs requis manquants / valeurs refusées par le site | Voir `error.context.page_state.page_errors` et la capture de debug |
+| `FIELD_VALUE_NOT_RETAINED` | 500 | Le site (Blazor Server) a effacé une valeur saisie malgré 3 tentatives | Réessayer ; si récurrent, latence réseau vers ESCRS à vérifier |
 | `AGREE_BUTTON_TIMEOUT`, `PAGE_LOAD_ERROR` | 500 | Site ESCRS injoignable ou lent | Réessayer plus tard |
 
 ## Confidentialité
@@ -162,6 +163,7 @@ docker run --rm -e RUN_LIVE_TESTS=1 -v "$PWD/tests:/app/tests:ro" -v "$PWD/pytes
 
 Les tests live couvrent les catégories d'incidents observées en production :
 
+0. **Valeur saisie perdue** : Blazor Server peut re-rendre un champ après la frappe et l'effacer (cause historique des « Please specify the Surgeon's name » puis 504). Chaque saisie est vérifiée et rejouée, un test le contrôle sur les 4 champs patient.
 1. **Sélecteur cassé après un changement du site** (ex. switch renommé `Post LASIK/PRK` → `Post LASIK/PRK/RK`) : health-check de tous les sélecteurs, dans les deux sections œil, plus bascule réelle d'un switch.
 2. **Modèle d'IOL inexistant** : l'API doit renvoyer `DROPDOWN_VALUE_NOT_FOUND` avec la liste `available`.
 3. **Formulaire incomplet** : réponse rapide avec `page_state`, au lieu d'un timeout silencieux côté reverse proxy.
