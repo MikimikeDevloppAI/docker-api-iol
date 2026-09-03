@@ -171,6 +171,18 @@ Les tests live couvrent les catégories d'incidents observées en production :
 
 GitHub Actions ([.github/workflows/tests.yml](.github/workflows/tests.yml)) exécute les tests unitaires à chaque push et PR, et les tests live dans l'image Docker après chaque push sur `master` ainsi que **chaque lundi à 06:00 UTC**. Un échec du job planifié signale un changement du site ESCRS avant qu'un utilisateur ne le subisse.
 
+## Déploiement automatique (GitHub → VPS)
+
+Chaque push sur `master` déclenche la chaîne **tests unitaires → tests live → déploiement**. Le job `deploy` ne tourne que si les deux jobs de tests sont verts :
+
+1. Il crée un bundle git du commit et l'envoie au VPS en SSH (le serveur n'a pas besoin d'accéder à GitHub).
+2. Sur le VPS, il met le clone à jour puis lance [deploy/update-vps.sh](deploy/update-vps.sh) : rebuild de l'image avec `APP_VERSION=<sha>`, redémarrage du service, attente que `/health` renvoie cette version. Si ce n'est pas le cas, retour automatique à la version précédente.
+3. Il vérifie enfin la version par l'URL publique.
+
+Secrets du repo : `VPS_SSH_KEY` (clé privée ed25519 dédiée, sa clé publique est dans `authorized_keys` du serveur), `VPS_KNOWN_HOSTS`, `VPS_HOST`, `VPS_USER`. Variable : `API_HEALTH_URL`.
+
+Conséquence : **pousser sur `master` déploie en production**. Travailler sur une branche et passer par une pull request (tests unitaires) avant de fusionner. Un déploiement manuel reste possible via « Run workflow » dans l'onglet Actions, ou directement sur le serveur avec `deploy/update-vps.sh`.
+
 ## Déploiement
 
 Un calcul dure entre 30 et 80 s. Le reverse proxy doit donc laisser au moins 180 s à l'upstream, sinon il renvoie un 504 alors que le calcul aboutit. Avec **Traefik**, il n'y a pas de timeout backend par défaut : il suffit d'exposer le service sur le port 5000 via les labels habituels (`traefik.http.services.<nom>.loadbalancer.server.port=5000`). Avec **Nginx** :

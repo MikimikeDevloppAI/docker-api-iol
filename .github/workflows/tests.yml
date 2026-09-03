@@ -1,4 +1,4 @@
-name: Tests
+name: CI
 
 on:
   push:
@@ -40,3 +40,51 @@ jobs:
             -v "$PWD/pytest.ini:/app/pytest.ini:ro" \
             docker-api-iol:ci \
             sh -c "pip install -q -r tests/requirements-dev.txt && pytest -m live -v --timeout 600 -p no:cacheprovider"
+
+  deploy:
+    name: Déploiement VPS Hostinger
+    # Uniquement un push sur master (ou lancement manuel) dont les tests unitaires ET live sont verts.
+    needs: [unit, live]
+    if: github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-vps
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Clé SSH de déploiement
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "${{ secrets.VPS_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+
+      - name: Envoi du code au VPS (bundle git, sans dépendre de GitHub côté serveur)
+        run: |
+          git bundle create deploy.bundle HEAD
+          scp -q -i ~/.ssh/deploy_key deploy.bundle "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/root/deploy.bundle"
+
+      - name: Mise à jour, rebuild, health check (rollback automatique si échec)
+        run: |
+          ssh -i ~/.ssh/deploy_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" 'bash -s' <<'EOF'
+          set -euo pipefail
+          cd /root/iol-api
+          PREV=$(git rev-parse HEAD)
+          git fetch -q /root/deploy.bundle HEAD
+          git reset -q --hard FETCH_HEAD
+          rm -f /root/deploy.bundle
+          bash deploy/update-vps.sh "$PREV"
+          EOF
+
+      - name: Vérification par l'URL publique
+        run: |
+          expected="${GITHUB_SHA::7}"
+          for i in $(seq 1 12); do
+            got=$(curl -fsS -m 15 "${{ vars.API_HEALTH_URL }}" | sed -E 's/.*"version": *"([^"]+)".*/\1/' || true)
+            if [ "$got" = "$expected" ]; then echo "OK : version $got en ligne"; exit 0; fi
+            sleep 5
+          done
+          echo "Version en ligne '$got' différente de '$expected'"; exit 1
