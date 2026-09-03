@@ -40,20 +40,34 @@ Vérifie que l'API répond. Renvoie aussi `version` (valeur de `APP_VERSION` pas
 ### `POST /calculate`
 Lance un calcul et renvoie le **screenshot PNG** en pièce jointe. Le lien de partage est dans le header HTTP `X-Share-Link`, et l'ID du calcul dans `X-Calculation-Id`.
 
-En cas d'échec, réponse JSON :
+En cas d'échec **après ouverture du site** (données refusées, bouton Calculate inactif, résultats absents, modèle d'IOL inconnu...), l'API renvoie **quand même une image** : la capture pleine page de l'écran d'erreur, avec les messages de validation du site visibles. Le détail est dans les en-têtes :
+
+| En-tête | Contenu |
+|---|---|
+| `X-Calculation-Status` | `error` |
+| `X-Calculation-Id` | identifiant du calcul |
+| `X-Error-Code` | ex. `CALCULATE_BUTTON_NOT_CLICKABLE`, `RESULTS_TIMEOUT`, `DROPDOWN_VALUE_NOT_FOUND` |
+| `X-Error-Message` | message lisible |
+| `X-Page-Errors` | messages affichés par le site, séparés par ` \| ` (ex. `Please specify the Surgeon's name`) |
+| `X-Error-Details` | contexte complet en JSON (liste `available`, `page_state`...) |
+
+Statut `422` quand le site a refusé les données, `500` pour une panne (site injoignable, sélecteur cassé), `400` pour un payload mal formé (réponse JSON, aucun navigateur lancé).
+
+Pour recevoir du JSON à la place de l'image en cas d'erreur, envoyer `Accept: application/json` ou ajouter `?format=json` :
 ```json
 {
   "success": false,
   "calculation_id": "uuid",
   "error": {"code": "DROPDOWN_VALUE_NOT_FOUND", "message": "...", "context": {"available": ["..."]}},
+  "error_screenshot_url": "/screenshot/uuid",
+  "error_screenshot_base64": "iVBORw0KGgo...",
   "debug_screenshots": ["uuid_HHMMSS_label.png"],
   "debug_url_template": "/debug/uuid/<filename>"
 }
 ```
-Statut `400` pour une erreur de payload (`INVALID_*`, `UNKNOWN_*`, `MISSING_*`), `500` pour une erreur pendant l'automatisation.
 
 ### `POST /calculate-json`
-Identique à `/calculate` mais renvoie une **réponse JSON** :
+Identique à `/calculate` mais renvoie toujours du **JSON** (en cas d'erreur, avec `error_screenshot_url` et `error_screenshot_base64`) :
 ```json
 {
   "success": true,
@@ -116,10 +130,11 @@ Le switch peut être nommé `Post LASIK/PRK` (historique) ou `Post LASIK/PRK/RK`
 | Code | Statut | Cause | Quoi faire |
 |---|---|---|---|
 | `NO_DATA`, `INVALID_PAYLOAD`, `MISSING_EYE`, `INVALID_GENDER`, `UNKNOWN_TOP_FIELD`, `UNKNOWN_EYE_FIELD`, `UNKNOWN_SWITCH`, `INVALID_SWITCH_VALUE` | 400 | Payload mal formé | Corriger le payload, le message liste les clés valides |
-| `DROPDOWN_VALUE_NOT_FOUND` | 500 | Fabricant ou modèle d'IOL absent de la liste ESCRS | Utiliser une valeur de `error.context.available` |
+| `DROPDOWN_VALUE_NOT_FOUND` | 422 | Fabricant ou modèle d'IOL absent de la liste ESCRS | Utiliser une valeur de `error.context.available` |
 | `SWITCH_NOT_FOUND`, `EYE_FIELDS_NOT_FOUND`, `TOP_FIELD_NOT_FOUND`, `EYE_SECTION_NOT_FOUND`, `DROPDOWN_NOT_FOUND` | 500 | Le site ESCRS a changé son markup | Lancer les tests live, adapter les sélecteurs dans `app.py` |
-| `CALCULATE_BUTTON_NOT_CLICKABLE`, `RESULTS_TIMEOUT` | 500 | Champs requis manquants / valeurs refusées par le site | Voir `error.context.page_state.page_errors` et la capture de debug |
-| `FIELD_VALUE_NOT_RETAINED` | 500 | Le site (Blazor Server) a effacé une valeur saisie malgré 3 tentatives | Réessayer ; si récurrent, latence réseau vers ESCRS à vérifier |
+| `CALCULATE_BUTTON_NOT_CLICKABLE`, `RESULTS_TIMEOUT` | 422 | Champs requis manquants / valeurs refusées par le site | Regarder la capture renvoyée et `X-Page-Errors` |
+| `NO_RESULTS` | 422 | Le site a calculé mais affiche un tableau vide (valeurs hors plage, ex. AL 999 mm) | Regarder la capture renvoyée, corriger les mesures |
+| `FIELD_VALUE_NOT_RETAINED` | 422 | Valeur refusée par le champ (lettres dans un champ numérique, format invalide) ou effacée par un re-rendu du site malgré 3 tentatives | Regarder la capture renvoyée (le champ apparaît vide), corriger la valeur |
 | `AGREE_BUTTON_TIMEOUT`, `PAGE_LOAD_ERROR` | 500 | Site ESCRS injoignable ou lent | Réessayer plus tard |
 
 ## Confidentialité

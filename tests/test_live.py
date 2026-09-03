@@ -163,9 +163,10 @@ def test_unknown_iol_model_reports_available_models(client, capsys):
     payload = prod_like_payload(manufacturer="HOYA", iol="ZZZ_FAKE_MODEL_999", both_eyes=False)
     resp = client.post("/calculate-json", json=payload)
     body = resp.get_json()
-    assert resp.status_code == 500, body
+    assert resp.status_code == 422, body
     err = body["error"]
     assert err["code"] == "DROPDOWN_VALUE_NOT_FOUND"
+    assert body["error_screenshot_url"] and body["error_screenshot_base64"]
     assert err["context"]["dropdown"] == "Select IOL"
     assert err["context"]["requested"] == "ZZZ_FAKE_MODEL_999"
     assert err["context"]["available"], "la liste des modèles disponibles doit être renvoyée"
@@ -183,7 +184,40 @@ def test_missing_required_fields_reports_page_state(client, monkeypatch):
     payload = {"gender": "Female", "right_eye": {"AL": "23.50"}}
     resp = client.post("/calculate-json", json=payload)
     body = resp.get_json()
-    assert resp.status_code == 500, body
+    assert resp.status_code == 422, body
     code = body["error"]["code"]
     assert code in ("CALCULATE_BUTTON_NOT_CLICKABLE", "RESULTS_TIMEOUT"), body
     assert "page_state" in body["error"]["context"]
+    assert body["error_screenshot_url"] and len(body["error_screenshot_base64"]) > 10_000
+
+
+def test_out_of_range_values_return_no_results_png(client, monkeypatch):
+    """Valeurs numériques absurdes (AL 999 mm, K1 1 D) : le site calcule mais affiche un tableau
+    de résultats vide. L'API doit le signaler (NO_RESULTS, 422) et renvoyer la capture."""
+    monkeypatch.setattr(iol_app, "RESULTS_TIMEOUT_SECONDS", 20)
+    payload = prod_like_payload(both_eyes=False)
+    payload["right_eye"].update({"AL": "999", "ACD": "99", "K1": "1", "K2": "300", "CCT": "9999"})
+    resp = client.post("/calculate", json=payload)
+    assert resp.status_code == 422, (resp.status_code, dict(resp.headers))
+    assert resp.mimetype == "image/png"
+    assert len(resp.data) > 50_000
+    assert resp.headers["X-Error-Code"] == "NO_RESULTS"
+
+
+def test_invalid_value_returns_error_screenshot_png(client, monkeypatch):
+    """Valeur invalide (lettres dans un champ numérique) : le site vide le champ, l'API le
+    détecte et renvoie la CAPTURE de l'écran (PNG) avec le code d'erreur dans les en-têtes.
+    (Des valeurs numériques hors plage, ex. AL=999, sont acceptées et calculées par le site.)"""
+    monkeypatch.setattr(iol_app, "RESULTS_TIMEOUT_SECONDS", 15)
+    monkeypatch.setattr(iol_app, "ELEMENT_TIMEOUT_SECONDS", 15)
+    payload = prod_like_payload(both_eyes=False)
+    payload["right_eye"].update({"AL": "abc"})
+    resp = client.post("/calculate", json=payload)
+    assert resp.status_code == 422, (resp.status_code, dict(resp.headers))
+    assert resp.mimetype == "image/png"
+    assert len(resp.data) > 50_000
+    assert resp.headers["X-Calculation-Status"] == "error"
+    assert resp.headers["X-Error-Code"] in ("FIELD_VALUE_NOT_RETAINED", "CALCULATE_BUTTON_NOT_CLICKABLE", "RESULTS_TIMEOUT")
+    assert "OD/AL" in resp.headers["X-Error-Message"]
+    path = os.path.join(iol_app.SCREENSHOTS_DIR, f"{resp.headers['X-Calculation-Id']}.png")
+    assert os.path.exists(path)

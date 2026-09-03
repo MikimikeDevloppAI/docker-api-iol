@@ -26,6 +26,8 @@ from selenium.common.exceptions import (
 import os
 import sys
 import re
+import json
+import base64
 import time
 import threading
 import traceback
@@ -321,6 +323,10 @@ XPATH_GENDER_SELECT = "//div[contains(@class,'mud-select') and .//label[normaliz
 XPATH_POPOVER_OPEN = "//div[contains(@class, 'mud-popover-open')]"
 XPATH_CALCULATE_BUTTON = "//button[.//span[contains(text(),'Calculate')]]"
 XPATH_PRINT_BUTTON = "//button[.//span[normalize-space(text())='Print']]"
+# Cellules de résultat (puissance / réfraction prédite) : "+21.50", "-0.28"...
+XPATH_RESULT_POWER_CELLS = ("//td[contains(@class,'text-center')]"
+                            "[starts-with(normalize-space(.),'+') or starts-with(normalize-space(.),'-')]")
+RESULTS_FILL_TIMEOUT_SECONDS = 10
 XPATH_SHARE_BUTTONS = (
     "//button[.//span[normalize-space(text())='Share']]",
     "//button[contains(text(),'Share')]",
@@ -532,7 +538,9 @@ def fill_input_verified(driver, locate, value, field_name, calc_id, attempts=3):
         time.sleep(0.5)
     save_debug_screenshot(driver, calc_id, f"{field_name}_value_not_retained")
     raise IOLError("FIELD_VALUE_NOT_RETAINED",
-                   f"Field '{field_name}' did not keep its value after {attempts} attempts")
+                   f"Field '{field_name}' did not keep its value after {attempts} attempts "
+                   "(the site probably rejected it: non-numeric or invalid format)",
+                   {"field": field_name, "hint": "Check the value format for this field"})
 
 
 def fill_top_field(driver, wait, key, label, value, calc_id):
@@ -614,6 +622,15 @@ def find_eye_section(driver, eye_label, calc_id):
         raise IOLError("EYE_SECTION_NOT_FOUND", f"Section '{eye_label}' not found on page")
 
 
+def count_result_values(driver):
+    """Nombre de valeurs numériques signées dans les tableaux de résultats."""
+    try:
+        cells = driver.find_elements(By.XPATH, XPATH_RESULT_POWER_CELLS)
+        return sum(1 for c in cells if re.match(r"^[+-]\d+(\.\d+)?$", c.text.strip()))
+    except Exception:
+        return 0
+
+
 def click_calculate(driver, wait, calc_id):
     try:
         calc_button = wait.until(EC.element_to_be_clickable((By.XPATH, XPATH_CALCULATE_BUTTON)))
@@ -634,12 +651,26 @@ def click_calculate(driver, wait, calc_id):
     try:
         WebDriverWait(driver, RESULTS_TIMEOUT_SECONDS).until(
             EC.element_to_be_clickable((By.XPATH, XPATH_PRINT_BUTTON)))
-        log("✅ Results loaded")
     except TimeoutException:
         save_debug_screenshot(driver, calc_id, "results_timeout")
         raise IOLError("RESULTS_TIMEOUT",
                        f"Calculation submitted but results did not appear within {RESULTS_TIMEOUT_SECONDS}s",
                        {"page_state": dump_page_state(driver)})
+
+    # La page de résultats existe : vérifier qu'elle contient des valeurs. Avec des données hors
+    # plage (ex. AL 999 mm) le site affiche un tableau vide sans message d'erreur.
+    deadline = time.monotonic() + RESULTS_FILL_TIMEOUT_SECONDS
+    n_values = count_result_values(driver)
+    while n_values == 0 and time.monotonic() < deadline:
+        time.sleep(0.5)
+        n_values = count_result_values(driver)
+    if n_values == 0:
+        save_debug_screenshot(driver, calc_id, "no_results")
+        raise IOLError("NO_RESULTS",
+                       "The site displayed an empty result table: values are probably outside the "
+                       "calculators' valid range",
+                       {"page_state": dump_page_state(driver)})
+    log(f"✅ Results loaded ({n_values} values)")
 
 
 def click_share_and_get_link(driver, calc_id):
@@ -659,17 +690,14 @@ def click_share_and_get_link(driver, calc_id):
             log("⚠️ Share button not found")
             return None
 
+        # Le lien est dans l'attribut onclick : pas besoin de cliquer (le clic tentait une copie
+        # dans le presse-papiers, impossible en headless, et laissait un bandeau d'erreur sur la capture).
         onclick_attr = share_button.get_attribute("onclick")
         if onclick_attr:
             match = re.search(r"copyToClipboard\s*\(\s*['\"]([^'\"]+)['\"]", onclick_attr)
             if match:
-                link = match.group(1)
-                try:
-                    driver.execute_script("arguments[0].click();", share_button)
-                except Exception:
-                    pass
                 log("🔗 Share link extracted")
-                return link
+                return match.group(1)
 
         try:
             driver.execute_script("arguments[0].click();", share_button)
@@ -697,6 +725,22 @@ def take_fullpage_screenshot(driver, path):
     except Exception as e:
         log(f"❌ Screenshot error: {type(e).__name__}: {e}")
         return False
+
+
+def capture_error_screenshot(driver, path):
+    """Capture pleine page de l'état d'erreur (messages de validation du site visibles),
+    au même format que la capture de résultat, pour la renvoyer au client."""
+    if not driver:
+        return False
+    try:
+        ActionChains(driver).send_keys(Keys.ESCAPE).perform()  # ferme un éventuel popup
+        time.sleep(0.2)
+    except Exception:
+        pass
+    ok = take_fullpage_screenshot(driver, path)
+    if ok:
+        log("📸 Error screenshot captured")
+    return ok
 
 
 def open_calculator(driver, wait, calc_id):
@@ -739,6 +783,7 @@ def calculate_iol(data, screenshot_path, calc_id):
         "screenshot_saved": False,
         "share_link": None,
         "debug_screenshots": [],
+        "error_screenshot": False,
     }
 
     def collect_debug():
@@ -815,12 +860,14 @@ def calculate_iol(data, screenshot_path, calc_id):
         log(f"❌ IOLError [{e.code}]: {e.message} (after {time.monotonic() - started:.1f}s)")
         result["error"] = {"code": e.code, "message": e.message, "context": e.context}
         save_debug_screenshot(driver, calc_id, f"final_error_{e.code}")
+        result["error_screenshot"] = capture_error_screenshot(driver, screenshot_path)
     except Exception as e:
         log(f"❌ Unexpected error: {type(e).__name__}: {e}")
         log(traceback.format_exc())
         result["error"] = {"code": "UNEXPECTED_ERROR", "message": f"{type(e).__name__}: {e}",
                            "context": {"traceback": traceback.format_exc()}}
         save_debug_screenshot(driver, calc_id, "unexpected_error")
+        result["error_screenshot"] = capture_error_screenshot(driver, screenshot_path)
     finally:
         collect_debug()
         if driver:
@@ -837,9 +884,73 @@ def calculate_iol(data, screenshot_path, calc_id):
 # Endpoints
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Le site ESCRS a refusé les données (champ manquant, valeur hors plage, modèle inconnu...) :
+# ce n'est pas une panne de l'API -> 422 avec la capture de l'écran d'erreur.
+SITE_REJECTED_CODES = {
+    "CALCULATE_BUTTON_NOT_CLICKABLE", "RESULTS_TIMEOUT", "NO_RESULTS", "DROPDOWN_VALUE_NOT_FOUND",
+    "GENDER_VALUE_NOT_FOUND", "EYE_FIELDS_NOT_FOUND", "FIELD_VALUE_NOT_RETAINED",
+}
+
+
 def _error_status(result):
     code = (result.get("error") or {}).get("code", "")
-    return 400 if code.startswith(("INVALID_", "UNKNOWN_", "MISSING_")) else 500
+    if code.startswith(("INVALID_", "UNKNOWN_", "MISSING_")):
+        return 400
+    if code in SITE_REJECTED_CODES:
+        return 422
+    return 500
+
+
+def _client_wants_json():
+    if request.args.get("format") == "json":
+        return True
+    accept = request.headers.get("Accept", "")
+    return "application/json" in accept and "image/png" not in accept
+
+
+def _ascii_header(value, limit=4000):
+    """Valeur d'en-tête HTTP sûre (ASCII, une ligne, taille bornée)."""
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=True, default=str)
+    text = text.encode("ascii", "backslashreplace").decode("ascii")
+    text = text.replace("\r", " ").replace("\n", " ")
+    return text[:limit]
+
+
+def _error_payload(calc_id, result, screenshot_path, with_base64=True):
+    payload = {
+        "success": False,
+        "calculation_id": calc_id,
+        "error": result.get("error"),
+        "debug_screenshots": result.get("debug_screenshots", []),
+        "debug_url_template": f"/debug/{calc_id}/<filename>",
+    }
+    if result.get("error_screenshot") and os.path.exists(screenshot_path):
+        payload["error_screenshot_url"] = f"/screenshot/{calc_id}"
+        if with_base64:
+            with open(screenshot_path, "rb") as f:
+                payload["error_screenshot_base64"] = base64.b64encode(f.read()).decode("ascii")
+    return payload
+
+
+def _error_response_png(calc_id, result, screenshot_path, status):
+    """Capture de l'écran d'erreur en corps de réponse, détails de l'erreur dans les en-têtes."""
+    err = result.get("error") or {}
+    response = send_file(screenshot_path, mimetype="image/png", as_attachment=True,
+                         download_name=f"iol_error_{calc_id}.png")
+    response.status_code = status
+    response.headers["X-Calculation-Id"] = calc_id
+    response.headers["X-Calculation-Status"] = "error"
+    response.headers["X-Error-Code"] = _ascii_header(err.get("code", "UNKNOWN"), 100)
+    response.headers["X-Error-Message"] = _ascii_header(err.get("message", ""), 1000)
+    context = err.get("context") or {}
+    if context:
+        response.headers["X-Error-Details"] = _ascii_header(context)
+    page_errors = None
+    if isinstance(context, dict):
+        page_errors = (context.get("page_state") or {}).get("page_errors")
+    if page_errors:
+        response.headers["X-Page-Errors"] = _ascii_header(" | ".join(page_errors), 2000)
+    return response
 
 
 def _run_calculation():
@@ -878,13 +989,10 @@ def calculate():
             response.headers["X-Calculation-Id"] = calc_id
             return response
 
-        return jsonify({
-            "success": False,
-            "calculation_id": calc_id,
-            "error": result.get("error"),
-            "debug_screenshots": result.get("debug_screenshots", []),
-            "debug_url_template": f"/debug/{calc_id}/<filename>",
-        }), _error_status(result)
+        status = _error_status(result)
+        if result.get("error_screenshot") and os.path.exists(screenshot_path) and not _client_wants_json():
+            return _error_response_png(calc_id, result, screenshot_path, status)
+        return jsonify(_error_payload(calc_id, result, screenshot_path)), status
     except Exception as e:
         log(f"❌ Server error: {type(e).__name__}: {e}")
         return jsonify({"error": {"code": "SERVER_ERROR", "message": f"{type(e).__name__}: {e}"}}), 500
@@ -911,7 +1019,7 @@ def calculate_json():
             "debug_url_template": f"/debug/{calc_id}/<filename>",
         }
         if not result["success"]:
-            payload["error"] = result.get("error")
+            payload.update(_error_payload(calc_id, result, screenshot_path))
             return jsonify(payload), _error_status(result)
         return jsonify(payload), 200
     except Exception as e:

@@ -212,3 +212,90 @@ def test_file_endpoints_reject_bad_ids(client, path):
 
 def test_unknown_screenshot_is_404(client):
     assert client.get("/screenshot/00000000-0000-0000-0000-000000000000").status_code == 404
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Capture de l'écran d'erreur renvoyée au client
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _failing_calc(code, context=None):
+    def fake_calculate_iol(data, screenshot_path, calc_id):
+        with open(screenshot_path, "wb") as f:
+            f.write(b"PNG-ERREUR" * 100)
+        return {"success": False, "calculation_id": calc_id, "screenshot_saved": False,
+                "share_link": None, "debug_screenshots": [f"{calc_id}_1_x.png"],
+                "error_screenshot": True,
+                "error": {"code": code, "message": "Site refused: Please specify the Surgeon's name",
+                          "context": context or {"page_state": {"page_errors": [
+                              "Please specify the Surgeon's name", "AL must be between 15 and 40"]}}}}
+    return fake_calculate_iol
+
+
+def test_calculate_returns_error_screenshot_png_with_headers(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(iol_app, "calculate_iol", _failing_calc("CALCULATE_BUTTON_NOT_CLICKABLE"))
+    monkeypatch.setattr(iol_app, "SCREENSHOTS_DIR", str(tmp_path))
+    resp = client.post("/calculate", json=prod_like_payload())
+    assert resp.status_code == 422
+    assert resp.mimetype == "image/png"
+    assert resp.data.startswith(b"PNG-ERREUR")
+    assert resp.headers["X-Calculation-Status"] == "error"
+    assert resp.headers["X-Error-Code"] == "CALCULATE_BUTTON_NOT_CLICKABLE"
+    assert "Surgeon" in resp.headers["X-Error-Message"]
+    assert "AL must be between" in resp.headers["X-Page-Errors"]
+    assert resp.headers["X-Calculation-Id"]
+
+
+def test_calculate_error_json_when_client_asks_for_json(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(iol_app, "calculate_iol", _failing_calc("RESULTS_TIMEOUT"))
+    monkeypatch.setattr(iol_app, "SCREENSHOTS_DIR", str(tmp_path))
+    for kwargs in ({"headers": {"Accept": "application/json"}}, {"query_string": {"format": "json"}}):
+        resp = client.post("/calculate", json=prod_like_payload(), **kwargs)
+        assert resp.status_code == 422
+        body = resp.get_json()
+        assert body["error"]["code"] == "RESULTS_TIMEOUT"
+        assert body["error_screenshot_url"] == f"/screenshot/{body['calculation_id']}"
+        import base64
+        assert base64.b64decode(body["error_screenshot_base64"]).startswith(b"PNG-ERREUR")
+
+
+def test_calculate_json_error_includes_screenshot(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(iol_app, "calculate_iol",
+                        _failing_calc("DROPDOWN_VALUE_NOT_FOUND", {"available": ["A", "B"]}))
+    monkeypatch.setattr(iol_app, "SCREENSHOTS_DIR", str(tmp_path))
+    resp = client.post("/calculate-json", json=prod_like_payload())
+    assert resp.status_code == 422
+    body = resp.get_json()
+    assert body["success"] is False
+    assert body["error"]["context"]["available"] == ["A", "B"]
+    assert body["error_screenshot_url"]
+    assert body["error_screenshot_base64"]
+
+
+def test_error_without_screenshot_stays_json(client, monkeypatch, tmp_path):
+    def no_browser(data, screenshot_path, calc_id):
+        return {"success": False, "calculation_id": calc_id, "screenshot_saved": False,
+                "share_link": None, "debug_screenshots": [], "error_screenshot": False,
+                "error": {"code": "PAGE_LOAD_ERROR", "message": "x", "context": {}}}
+    monkeypatch.setattr(iol_app, "calculate_iol", no_browser)
+    monkeypatch.setattr(iol_app, "SCREENSHOTS_DIR", str(tmp_path))
+    resp = client.post("/calculate", json=prod_like_payload())
+    assert resp.status_code == 500
+    assert resp.mimetype == "application/json"
+    assert "error_screenshot_url" not in resp.get_json()
+
+
+@pytest.mark.parametrize("code, status", [
+    ("INVALID_GENDER", 400), ("UNKNOWN_SWITCH", 400), ("MISSING_EYE", 400),
+    ("CALCULATE_BUTTON_NOT_CLICKABLE", 422), ("RESULTS_TIMEOUT", 422), ("NO_RESULTS", 422),
+    ("DROPDOWN_VALUE_NOT_FOUND", 422), ("FIELD_VALUE_NOT_RETAINED", 422),
+    ("SWITCH_NOT_FOUND", 500), ("PAGE_LOAD_ERROR", 500), ("UNEXPECTED_ERROR", 500),
+])
+def test_error_status_mapping(code, status):
+    assert iol_app._error_status({"error": {"code": code}}) == status
+
+
+def test_ascii_header_is_single_line_ascii_and_bounded():
+    value = iol_app._ascii_header({"msg": "Erreur é\nligne 2", "list": list(range(5000))})
+    assert "\n" not in value
+    assert value.isascii()
+    assert len(value) <= 4000
