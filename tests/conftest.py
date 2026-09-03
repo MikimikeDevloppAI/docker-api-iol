@@ -53,11 +53,12 @@ SENSITIVE_VALUES = list(FAKE_PATIENT.values()) + list(FAKE_EYE.values()) + ["Fem
 def find_sensitive(text, values=None):
     """Retourne les valeurs sensibles présentes dans `text`.
     Les valeurs numériques courtes (âge "84", "23.64"...) sont cherchées avec des frontières
-    pour ne pas matcher par hasard un UUID, un timestamp ou un autre nombre."""
+    pour ne pas matcher par hasard un UUID, un timestamp, un compteur technique (values=84)
+    ou un autre nombre. Une vraie fuite ressemble à "Age: 84" ou "'age': '84'"."""
     import re
     found = []
     for v in (SENSITIVE_VALUES if values is None else values):
-        pattern = r"(?<![0-9A-Za-z:.])" + re.escape(v) + r"(?![0-9A-Za-z:.])"
+        pattern = r"(?<![0-9A-Za-z:.=])" + re.escape(v) + r"(?![0-9A-Za-z:.])"
         if re.search(pattern, text):
             found.append(v)
     return found

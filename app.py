@@ -670,7 +670,7 @@ def click_calculate(driver, wait, calc_id):
                        "The site displayed an empty result table: values are probably outside the "
                        "calculators' valid range",
                        {"page_state": dump_page_state(driver)})
-    log(f"✅ Results loaded ({n_values} values)")
+    log(f"✅ Results loaded (values={n_values})")
 
 
 def click_share_and_get_link(driver, calc_id):
