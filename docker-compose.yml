@@ -1,16 +1,33 @@
-version: '3.8'
-
 services:
-  iol-calculator:
-    build: .
-    container_name: iol-calculator-api
+  iol-api:
+    build:
+      context: .
+      args:
+        # Exposé dans GET /health -> permet de vérifier quelle version tourne.
+        # Ex. : APP_VERSION=$(git rev-parse --short HEAD) docker compose up -d --build
+        APP_VERSION: ${APP_VERSION:-dev}
+    container_name: iol-api
+    restart: unless-stopped
     ports:
       - "5000:5000"
-    volumes:
-      - ./screenshots:/app/screenshots
     environment:
       - PYTHONUNBUFFERED=1
-    restart: unless-stopped
+      # Confidentialité : les captures contiennent des données patient.
+      # Elles sont supprimées après ce délai (minutes). <= 0 = conservation illimitée.
+      - SCREENSHOT_RETENTION_MINUTES=${SCREENSHOT_RETENTION_MINUTES:-60}
+      # Captures de debug sur erreur (1 = on, 0 = off)
+      - DEBUG_SCREENSHOTS=${DEBUG_SCREENSHOTS:-1}
+      # Délai max d'attente des résultats sur le site ESCRS
+      - RESULTS_TIMEOUT_SECONDS=${RESULTS_TIMEOUT_SECONDS:-60}
+    volumes:
+      - ./screenshots:/app/screenshots
+    # Rotation des logs Docker : sans ça, le fichier json-file grossit sans limite
+    # (15 Mo accumulés sur l'ancien VPS). Les logs sont anonymisés mais on borne quand même.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
       interval: 30s

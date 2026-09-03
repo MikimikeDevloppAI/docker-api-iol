@@ -12,6 +12,15 @@ screenshots/
 *.jpeg
 .DS_Store
 README.md
+INFRASTRUCTURE.md
+*.docx
+tests/
+pytest.ini
+.github/
+.claude/
 test_*.py
 .git
 .gitignore
+priv*e.txt
+*.pem
+*.key

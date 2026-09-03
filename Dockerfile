@@ -50,6 +50,8 @@ RUN mkdir -p screenshots
 EXPOSE 5000
 
 # Set environment variables
+ARG APP_VERSION=dev
+ENV APP_VERSION=$APP_VERSION
 ENV PYTHONUNBUFFERED=1
 
 # Run the application

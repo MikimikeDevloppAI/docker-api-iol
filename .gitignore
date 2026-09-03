@@ -1,0 +1,32 @@
+# Secrets / SSH keys
+privée.txt
+priv*e.txt
+*.pem
+*.key
+.env
+.env.*
+
+# Documentation d'infrastructure (IP, accès SSH, chemins serveur) :
+# le repo GitHub est PUBLIC, ces fichiers restent en local.
+INFRASTRUCTURE.md
+*.docx
+
+# Screenshots générés (contiennent des données patient)
+screenshots/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Claude
+.claude/
