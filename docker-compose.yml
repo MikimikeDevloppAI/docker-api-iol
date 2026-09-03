@@ -9,7 +9,9 @@ services:
     container_name: iol-api
     restart: unless-stopped
     ports:
-      - "5000:5000"
+      # Lié à localhost : seul le reverse proxy (Nginx, TLS) doit atteindre l'API.
+      # Sur l'ancien VPS le port 5000 était exposé publiquement et scanné en permanence.
+      - "127.0.0.1:5000:5000"
     environment:
       - PYTHONUNBUFFERED=1
       # Confidentialité : les captures contiennent des données patient.
